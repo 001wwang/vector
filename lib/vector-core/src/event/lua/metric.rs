@@ -90,11 +90,17 @@ impl<'a> ToLua<'a> for Metric {
                 tbl.set("set", set)?;
             }
             MetricValue::Distribution { samples, statistic } => {
+                let samples: Vec<_> = samples
+                    .into_iter()
+                    .map(|s| {
+                        let distribution = ctx.create_table()?;
+                        distribution.set("rate", s.rate)?;
+                        distribution.set("value", s.value)?;
+                        Ok(distribution)
+                    })
+                    .collect::<Result<_, _>>()?;
                 let distribution = ctx.create_table()?;
-                let sample_rates: Vec<_> = samples.iter().map(|s| s.rate).collect();
-                let values: Vec<_> = samples.into_iter().map(|s| s.value).collect();
-                distribution.set("values", values)?;
-                distribution.set("sample_rates", sample_rates)?;
+                distribution.set("samples", samples)?;
                 distribution.set("statistic", statistic)?;
                 tbl.set("distribution", distribution)?;
             }
@@ -169,12 +175,23 @@ impl<'a> FromLua<'a> for Metric {
                 values: set.get::<_, LuaTable>("values").and_then(table_to_set)?,
             }
         } else if let Some(distribution) = table.get::<_, Option<LuaTable>>("distribution")? {
-            let values: Vec<f64> = distribution.get("values")?;
-            let rates: Vec<u32> = distribution.get("sample_rates")?;
-            MetricValue::Distribution {
-                samples: metric::zip_samples(values, rates),
-                statistic: distribution.get("statistic")?,
-            }
+            let samples = if let Ok(samples) = distribution.get::<&str, Vec<LuaTable>>("samples") {
+                samples
+                    .into_iter()
+                    .map(|sample| {
+                        Ok(metric::Sample {
+                            value: sample.get("value")?,
+                            rate: sample.get("rate")?,
+                        })
+                    })
+                    .collect::<Result<_, _>>()?
+            } else {
+                let values: Vec<f64> = distribution.get("values")?;
+                let rates: Vec<u32> = distribution.get("sample_rates")?;
+                metric::zip_samples(values, rates)
+            };
+            let statistic = distribution.get("statistic")?;
+            MetricValue::Distribution { samples, statistic }
         } else if let Some(aggregated_histogram) =
             table.get::<_, Option<LuaTable>>("aggregated_histogram")?
         {
@@ -326,12 +343,11 @@ mod test {
         );
         let assertions = vec![
             "type(metric.distribution) == 'table'",
-            "#metric.distribution.values == 2",
-            "metric.distribution.values[1] == 1",
-            "metric.distribution.values[2] == 1",
-            "#metric.distribution.sample_rates == 2",
-            "metric.distribution.sample_rates[1] == 10",
-            "metric.distribution.sample_rates[2] == 20",
+            "#metric.distribution.samples == 2",
+            "metric.distribution.samples[1].value == 1",
+            "metric.distribution.samples[2].value == 1",
+            "metric.distribution.samples[1].rate == 10",
+            "metric.distribution.samples[2].rate == 20",
         ];
         assert_metric(metric, assertions)
     }
@@ -485,11 +501,33 @@ mod test {
     }
 
     #[test]
-    fn from_lua_distribution() {
+    fn from_lua_distribution_new() {
         let value = r#"{
             name = "example distribution",
             distribution = {
-                values = { 1.0, 1.0 },
+                samples = { { value = 1.0, rate = 10 }, { value = 2.0, rate = 20 } },
+                statistic = "histogram"
+            }
+        }"#;
+        let expected = Metric::new(
+            "example distribution",
+            MetricKind::Absolute,
+            MetricValue::Distribution {
+                samples: crate::samples![1.0 => 10, 2.0 => 20],
+                statistic: StatisticKind::Histogram,
+            },
+        );
+        Lua::new().context(|ctx| {
+            assert_event_data_eq!(ctx.load(value).eval::<Metric>().unwrap(), expected);
+        });
+    }
+
+    #[test]
+    fn from_lua_distribution_old() {
+        let value = r#"{
+            name = "example distribution",
+            distribution = {
+                values = { 1.0, 2.0 },
                 sample_rates = { 10, 20 },
                 statistic = "histogram"
             }
@@ -498,7 +536,7 @@ mod test {
             "example distribution",
             MetricKind::Absolute,
             MetricValue::Distribution {
-                samples: crate::samples![1.0 => 10, 1.0 => 20],
+                samples: crate::samples![1.0 => 10, 2.0 => 20],
                 statistic: StatisticKind::Histogram,
             },
         );
