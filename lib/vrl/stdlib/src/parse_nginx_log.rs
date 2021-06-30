@@ -108,7 +108,8 @@ impl Expression for ParseNginxLogFn {
 
         let captures = regex.captures(&message).ok_or("failed parsing log line")?;
 
-        log_util::log_fields(&regex, &captures, &timestamp_format).map_err(Into::into)
+        log_util::log_fields(&regex, &captures, &timestamp_format, ctx.timezone())
+            .map_err(Into::into)
     }
 
     fn type_def(&self, _: &state::Compiler) -> TypeDef {
