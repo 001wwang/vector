@@ -5,6 +5,7 @@ mod event;
 mod files;
 mod http;
 mod lua;
+mod lua_data;
 mod metrics_snapshot;
 mod regex;
 mod template;
@@ -16,6 +17,7 @@ criterion_main!(
     files::benches,
     http::benches,
     lua::benches,
+    lua_data::benches,
     metrics_snapshot::benches,
     regex::benches,
     template::benches,
